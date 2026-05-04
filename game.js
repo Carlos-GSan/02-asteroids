@@ -39,6 +39,9 @@ const SCORE_THRESHOLDS = [500, 1500, 3000, 6000]; // for 'score' mode
 const POWERUP_DURATION = 10;
 const POWERUP_TTL = 12;
 const TRIPLE_SPREAD = 0.18;
+const SLOWMO_DURATION = 6;
+const SLOWMO_FACTOR = 0.5;
+const SLOWMO_LEVEL_INTERVAL = 3;
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
@@ -223,9 +226,10 @@ class Ship {
 
 // ── PowerUp ───────────────────────────────────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'triple') {
     this.x = x;
     this.y = y;
+    this.type = type;
     this.radius = 11;
     this.ttl = POWERUP_TTL;
     this.dead = false;
@@ -243,20 +247,39 @@ class PowerUp {
     const bob = Math.sin(this._age * 3) * 2;
     ctx.save();
     ctx.translate(this.x, this.y + bob);
-    ctx.strokeStyle = '#0ff';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
-    ctx.stroke();
-    // three fan lines
-    ctx.lineWidth = 1.8;
-    for (const angle of [-TRIPLE_SPREAD, 0, TRIPLE_SPREAD]) {
-      const a = -Math.PI / 2 + angle;
+
+    if (this.type === 'triple') {
+      ctx.strokeStyle = '#0ff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1.8;
+      for (const angle of [-TRIPLE_SPREAD, 0, TRIPLE_SPREAD]) {
+        const a = -Math.PI / 2 + angle;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
+        ctx.stroke();
+      }
+    } else {
+      // slowmo: círculo magenta con manecillas de reloj simples
+      ctx.strokeStyle = '#f0f';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1.8;
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
+      ctx.lineTo(0, -7);   // manecilla larga (12)
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(5, -3);   // manecilla corta (3)
       ctx.stroke();
     }
+
     ctx.restore();
   }
 }
@@ -299,6 +322,7 @@ let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 let powerupSpawned, tripleShotTimer, spawnTimer, nextThresholdIdx;
+let slowmoTimer, slowmoSpawnLevel;
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -312,9 +336,13 @@ function spawnAsteroids(count) {
   }
 }
 
-function trySpawnPowerup() {
-  if (powerups.length > 0) return;
-  powerups.push(new PowerUp(rand(60, W - 60), rand(60, H - 60)));
+function pickSlowmoLevelInBlock(blockStart) {
+  return randInt(blockStart, blockStart + SLOWMO_LEVEL_INTERVAL - 1);
+}
+
+function trySpawnPowerup(type = 'triple') {
+  if (powerups.some(p => p.type === type)) return;
+  powerups.push(new PowerUp(rand(60, W - 60), rand(60, H - 60), type));
 }
 
 function initGame() {
@@ -325,14 +353,17 @@ function initGame() {
   powerups = [];
   powerupSpawned = false;
   tripleShotTimer = 0;
+  slowmoTimer = 0;
   spawnTimer = SPAWN_INTERVAL;
   nextThresholdIdx = 0;
   score = 0;
   lives = 3;
   level = 1;
+  slowmoSpawnLevel = pickSlowmoLevelInBlock(1);
   state = 'playing';
   spawnAsteroids(4);
   if (SPAWN_MODE === 'level') trySpawnPowerup();
+  if (level === slowmoSpawnLevel) trySpawnPowerup('slowmo');
 }
 
 function nextLevel() {
@@ -343,6 +374,12 @@ function nextLevel() {
   ship.reset();
   spawnAsteroids(3 + level);
   if (SPAWN_MODE === 'level') trySpawnPowerup();
+  // recalcular bloque slowmo si pasamos al siguiente
+  if (level > slowmoSpawnLevel + SLOWMO_LEVEL_INTERVAL - 1) {
+    const blockStart = Math.floor((level - 1) / SLOWMO_LEVEL_INTERVAL) * SLOWMO_LEVEL_INTERVAL + 1;
+    slowmoSpawnLevel = pickSlowmoLevelInBlock(blockStart);
+  }
+  if (level === slowmoSpawnLevel) trySpawnPowerup('slowmo');
 }
 
 function explode(x, y, count = 8) {
@@ -374,7 +411,8 @@ function update(dt) {
     deadTimer -= dt;
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
-    asteroids.forEach(a => a.update(dt));
+    const astDtDead = slowmoTimer > 0 ? dt * SLOWMO_FACTOR : dt;
+    asteroids.forEach(a => a.update(astDtDead));
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
     return;
   }
@@ -386,10 +424,12 @@ function update(dt) {
 
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
-  asteroids.forEach(a => a.update(dt));
+  const astDt = slowmoTimer > 0 ? dt * SLOWMO_FACTOR : dt;
+  asteroids.forEach(a => a.update(astDt));
   particles.forEach(p => p.update(dt));
   powerups.forEach(p => p.update(dt));
   if (tripleShotTimer > 0) tripleShotTimer = Math.max(0, tripleShotTimer - dt);
+  if (slowmoTimer > 0) slowmoTimer = Math.max(0, slowmoTimer - dt);
 
   if (SPAWN_MODE === 'timer') {
     spawnTimer -= dt;
@@ -427,7 +467,8 @@ function update(dt) {
   for (const p of powerups) {
     if (!p.dead && dist(ship, p) < ship.radius + p.radius) {
       p.dead = true;
-      tripleShotTimer = POWERUP_DURATION;
+      if (p.type === 'triple') tripleShotTimer = POWERUP_DURATION;
+      else slowmoTimer = SLOWMO_DURATION;
     }
   }
 
@@ -481,6 +522,12 @@ function drawHUD() {
     ctx.fillStyle = '#0ff';
     ctx.font = '13px monospace';
     ctx.fillText(`TRIPLE  ${tripleShotTimer.toFixed(1)}s`, 14, 48);
+  }
+  if (slowmoTimer > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#f0f';
+    ctx.font = '13px monospace';
+    ctx.fillText(`SLOWMO  ${slowmoTimer.toFixed(1)}s`, 14, 66);
   }
 }
 
